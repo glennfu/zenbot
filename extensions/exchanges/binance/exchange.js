@@ -45,6 +45,7 @@ module.exports = function bittrex (conf) {
   }
 
   var orders = {}
+  var open_orders = []
 
   var exchange = {
     name: 'binance',
@@ -150,9 +151,9 @@ module.exports = function bittrex (conf) {
       }, function(err){
         // match error against string:
         // "binance {"code":-2011,"msg":"UNKNOWN_ORDER"}"
-        
+
         if (err) {
-          // decide if this error is allowed for a retry 
+          // decide if this error is allowed for a retry
 
           if (err.message && err.message.match(new RegExp(/-2011|UNKNOWN_ORDER/))) {
             console.error(('\ncancelOrder retry - unknown Order: ' + JSON.stringify(opts) + ' - ' + err).cyan)
@@ -204,10 +205,11 @@ module.exports = function bittrex (conf) {
           ordertype: opts.order_type
         }
         orders['~' + result.id] = order
+        openOrders['~' + result.id] = order
         cb(null, order)
       }).catch(function (error) {
         console.error('An error occurred', error)
-        
+
         // decide if this error is allowed for a retry:
         // {"code":-1013,"msg":"Filter failure: MIN_NOTIONAL"}
         // {"code":-2010,"msg":"Account has insufficient balance for requested action"}
@@ -263,7 +265,7 @@ module.exports = function bittrex (conf) {
         cb(null, order)
       }).catch(function (error) {
         console.error('An error occurred', error)
-        
+
         // decide if this error is allowed for a retry:
         // {"code":-1013,"msg":"Filter failure: MIN_NOTIONAL"}
         if (error.message.match(new RegExp(/-1013|MIN_NOTIONAL/))) {
@@ -289,6 +291,10 @@ module.exports = function bittrex (conf) {
       var client = authedClient()
       var order = orders['~' + opts.order_id]
       client.fetchOrder(opts.order_id, joinProduct(opts.product_id)).then(function (body) {
+        if (body.status !== 'open')
+          delete openOrders['~' + opts.order_id]
+
+        // console.log(`getOrder: ${JSON.stringify(body)}`)
         if (body.status !== 'open' && body.status !== 'canceled') {
           order.status = 'done'
           order.done_at = new Date().getTime()
@@ -303,6 +309,23 @@ module.exports = function bittrex (conf) {
 
     getCursor: function (trade) {
       return (trade.time || trade)
+    },
+
+    monitorOrders: function() {
+      let eventBus = conf.eventBus
+
+      // TODO: Make this work with `userDataStream` from:
+      // https://github.com/binance-exchange/binance-official-api-docs/blob/master/user-data-stream.md
+      setInterval(function() {
+        Object.keys(openOrders).forEach(function (key) {
+          var order = orders[key]
+
+          getOrder(order, function(api_order) {
+            eventBus.emit('ordersUpdated', api_order)
+          })
+
+        })
+      }, conf.order_poll_time)
     }
   }
   return exchange
